@@ -1,0 +1,294 @@
+---
+title: "Analysis of flash glucose monitoring data in patients with diabetes mellitus
+  p.3"
+author: "Карпович Лидия"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+#Напишем функцию для создания датасетов по пациентов в начале, через месяц и через полгода после включения в исследование
+Общая функция по времени и глюкозе
+```{r}
+info_function_GL <- function(time_vector, glucose_vector){
+  
+  high_glucose <- 10 # верхняя граница нормы (ммоль/л)
+  low_glucose <- 3.9 # нижняя граница нормы (ммоль/л)
+  
+  # Преобразуем данные
+  time_vector <- time_vector / 60 ## переход на измерение времени в минутах
+  glucose_vector <- as.numeric(gsub(",", ".", glucose_vector)) ## преобразуем данные по уровню гликюкозы в num
+  
+  # Задаем и обнуляем новые переменные
+  missed_time <- 0 ## общее время разрывов измерений датчика
+  sum_time <- 0  ## общее время записи
+  square_glucose <- 0 ## площадь под графиком уровень глюкозы/время
+  
+  low_time <- 0 ## общее время, когда уровень глюкозы ниже нормы
+  norm_time <- 0 ## общее время, когда уровень глюкозы в норме
+  high_time <- 0 ## общее время, когда уровень глюкозы выше нормы
+  n <- (length(time_vector)-1) ## вектор количества временных промежутков для цикла расчета уровня глюкозы
+  
+  # Рассчитываем длительность периодов с низким, нормальным и высоким уровнем глюкозы
+  for(i in 1:n){
+    
+      ## длительность временного периода между соседними измерениями уровня глюкозы
+      time_local <- time_vector[i+1]-time_vector[i]
+      
+      ## суммарное время
+      sum_time <- sum_time + time_local
+      
+      if(time_local <= 16){
+        ## считаем площади отдельных трапеций и складываем
+        square_glucose <- square_glucose + 0.5 * time_local * (glucose_vector[i] + glucose_vector[i+1])
+          
+        ## считаем временные отрезки и складываем
+        if(glucose_vector[i+1] >= glucose_vector[i]){ 
+          
+          ## При возрастающем или стабильном уровне глюкозы 
+          
+          if(glucose_vector[i] < low_glucose){ ### первая точка отрезка ниже 3,9 ммоль/л
+            if(glucose_vector[i+1] < low_glucose){ #### весь отрезок ниже 3.9 ммоль/л
+              low_time <- low_time + time_local 
+            }else{ 
+              low_time <- low_time + time_local*((low_glucose - glucose_vector[i])/
+                                                   (glucose_vector[i+1] - glucose_vector[i]))
+              if(glucose_vector[i+1] >= low_glucose & glucose_vector[i+1] <= high_glucose){ #### отрезок пересекает нижний лимит нормального уровня глюкозы, но не пересекает верхний лимит
+                norm_time <- norm_time + time_local*((glucose_vector[i+1] - low_glucose)/
+                                                     (glucose_vector[i+1] - glucose_vector[i]))
+              }else{ #### отрезок пересекает и нижний, и верхний лимит нормального уровня глюкозы
+                norm_time <- norm_time + time_local*((high_glucose - low_glucose)/
+                                                     (glucose_vector[i+1] - glucose_vector[i]))
+                high_time <- high_time + time_local*((glucose_vector[i+1] - high_glucose)/
+                                                       (glucose_vector[i+1] - glucose_vector[i]))
+              }
+            }
+          }else{ 
+            if(glucose_vector[i] >= low_glucose & glucose_vector[i] <= high_glucose){ ### первая точка отрезка - между нижним и верхним лимитами нормального уровня глюкозы
+              if(glucose_vector[i+1] <= high_glucose){ #### весь отрезок расположен между нижним и верхним лимитами нормального уровня глюкозы
+                norm_time <- norm_time + time_local
+              }else{ #### отрезок пересекает верхний лимит уровня нормального глюкозы
+                norm_time <- norm_time + time_local*((high_glucose - glucose_vector[i])/
+                                                       (glucose_vector[i+1] - glucose_vector[i]))
+                high_time <- high_time + time_local*((glucose_vector[i+1] - high_glucose)/
+                                                       (glucose_vector[i+1] - glucose_vector[i]))
+              }
+            }else{ ### весь отрезок выше 10.0 ммоль/л
+              high_time <- high_time + time_local
+            }
+          }
+        }else{ 
+          
+          ## При снижающемся уровне глюкозы
+          
+          if(glucose_vector[i+1] < low_glucose){ ### вторая точка отрезка ниже 3,9 ммоль/л
+            if(glucose_vector[i] < low_glucose){ ### весь отрезок ниже 3.9 ммоль/л
+              low_time <- low_time + time_local
+            }else{
+              low_time <- low_time + time_local*((low_glucose - glucose_vector[i+1])/
+                                                   (glucose_vector[i] - glucose_vector[i+1]))
+              if(glucose_vector[i] >= low_glucose & glucose_vector[i] <= high_glucose){ #### отрезок пересекает нижний лимит нормального уровня глюкозы, но не пересекает верхний лимит
+                norm_time <- norm_time + time_local*((glucose_vector[i] - low_glucose)/
+                                                       (glucose_vector[i] - glucose_vector[i+1]))
+              }else{ #### отрезок пересекает и нижний, и верхний лимит нормального уровня глюкозы
+                norm_time <- norm_time + time_local*((high_glucose - low_glucose)/
+                                                       (glucose_vector[i] - glucose_vector[i+1]))
+                high_time <- high_time + time_local*((glucose_vector[i] - high_glucose)/
+                                                       (glucose_vector[i] - glucose_vector[i+1]))
+              }
+            }
+          }else{
+            if(glucose_vector[i+1] >= low_glucose & glucose_vector[i+1] <= high_glucose){ ### вторая точка отрезка - между нижним и верхним лимитами нормального уровня глюкозы
+              if(glucose_vector[i] <= high_glucose){ #### весь отрезок расположен между нижним и верхним лимитами нормального уровня глюкозы
+                norm_time <- norm_time + time_local
+              }else{ #### отрезок пересекает верхний лимит уровня нормального глюкозы
+                norm_time <- norm_time + time_local*((high_glucose - glucose_vector[i+1])/
+                                                       (glucose_vector[i] - glucose_vector[i+1]))
+                high_time <- high_time + time_local*((glucose_vector[i] - high_glucose)/
+                                                       (glucose_vector[i] - glucose_vector[i+1]))
+              }
+            }else{ ### весь отрезок выше 10.0 ммоль/л
+              high_time <- high_time + time_local
+            }
+          }
+        }    
+      }else{
+        missed_time <- missed_time + time_local
+      }
+    }
+    
+    data_info <<- tibble("Общее время(мин.)" = round(sum_time, 0) %>% as.character(), 
+                      "Время пропусков(%)" = round((missed_time/sum_time) * 100, 0) %>% as.character(), 
+                      "Среднее значение глюкозы" = round(square_glucose/(sum_time - missed_time), 1) %>% as.character(),
+                      "Глюкоза ниже нормы(%)" = round((low_time/(sum_time - missed_time))*100,1) %>% as.character(),
+                      "Глюкоза в норме(%)" = round((norm_time/(sum_time - missed_time))*100,1) %>% as.character(),
+                      "Глюкоза выше нормы(%)" = round((high_time/(sum_time - missed_time))*100,1) %>% as.character())
+}
+```
+
+Функция для выбора временного отрезка
+```{r}
+time_function <- function(data){
+  # Выбираем непустые ретроспективные данные
+  retro <- data %>%
+    filter(c(`Ретроспективные.данные.по.глюкозе.ммоль.л` != "" & 
+               !is.na(`Ретроспективные.данные.по.глюкозе.ммоль.л`))) %>%
+    mutate(`Ретроспективные.данные.по.глюкозе.ммоль.л` = `Ретроспективные.данные.по.глюкозе.ммоль.л` %>% as.character()) %>%
+    select(`Отметка.времени.устройства`, `Данные.по.глюкозе` = `Ретроспективные.данные.по.глюкозе.ммоль.л`)
+  
+  # Выбираем непустые сканированные данные
+  scan <- data %>% 
+    filter(c(`Сканирование.уровня.глюкозы.ммоль.л` != "" & !is.na(`Сканирование.уровня.глюкозы.ммоль.л`))) %>%
+    mutate(`Сканирование.уровня.глюкозы.ммоль.л` = `Сканирование.уровня.глюкозы.ммоль.л` %>% as.character()) %>%
+    select(`Отметка.времени.устройства`, `Данные.по.глюкозе` = `Сканирование.уровня.глюкозы.ммоль.л`)
+
+  # Объединяем данные о глюкозе
+  glucose_level <- bind_rows(retro, scan)
+  
+    # Переводим формат времени в секунды (точка отсчета - 01.01.1970)
+  glucose_level <- glucose_level %>%
+      mutate(`Отметка.времени.устройства` = as.POSIXct(`Отметка.времени.устройства`, format = "%Y-%m-%d %H:%M:%S") %>%
+               as.numeric())
+  
+    # Упорядочиваем данные по времени
+  glucose_level <- glucose_level %>%
+    arrange(`Отметка.времени.устройства`)
+
+  # Посчитаем количество записей измерений глюкозы и длительность всей записи
+  nr <- nrow(glucose_level)
+  recording_duration <- glucose_level$`Отметка.времени.устройства`[nr] -
+    glucose_level$`Отметка.времени.устройства`[1]
+  
+  # Обнулим переменные по интересующим нас временным периодам 
+  time_period_1 <- tibble("Отметка.времени.устройства" = "", "Данные.по.глюкозе" = "")
+  time_period_2 <- tibble("Отметка.времени.устройства" = "", "Данные.по.глюкозе" = "")
+  time_period_3 <- tibble("Отметка.времени.устройства" = "", "Данные.по.глюкозе" = "")
+  
+  # Выбираем из данных о глюкозе временные периоды по 2 недели - в начале исследования, через 1 месяц (30 дней) и через полгода   (180 дней)
+  if(recording_duration < (86400 * 14)){
+    ## Для пациентов с периодом наблюдения менее 14 дней (86400 - количество секунд в сутках)
+      ### Данные на начало использования датчика
+    time_period_1 <<- glucose_level
+  }else{
+    ## Для пациентов с периодом наблюдения 14 дней и более
+      ### Данные на начало использования датчика
+    time_period_1 <<- glucose_level %>% filter(`Отметка.времени.устройства` - 
+                                                 `Отметка.времени.устройства`[1] <= 86400 * 14)
+    if(recording_duration >= 86400 * 44){
+    ## Для пациентов с периодом наблюдения 44 дня и более
+      ### Данные через месяц использования датчика
+      time_period_2 <<- glucose_level %>% filter((`Отметка.времени.устройства` - 
+                                                   `Отметка.времени.устройства`[1] > 86400 * 30) & 
+                                                   (`Отметка.времени.устройства` - 
+                                                   `Отметка.времени.устройства`[1] <= 86400 * 44))
+      if(recording_duration >= 86400 * 194){
+      ## Для пациентов с периодом наблюдения 194 дня и более
+        ### Данные через полгода использования датчика
+        time_period_3 <<- glucose_level %>% filter((`Отметка.времени.устройства` - 
+                                                   `Отметка.времени.устройства`[1] > 86400 * 180) & 
+                                                   (`Отметка.времени.устройства` - 
+                                                   `Отметка.времени.устройства`[1] <= 86400 * 194))
+      }
+    }
+  }
+}
+```
+
+Формирование общих таблиц по 3 временным периодам
+```{r}
+data_period_creation <- function(csv){ ## csv - вектор с нужными id пациентов
+  
+  # Обнулим data.frame по трем интересующим нас периодам времени
+  first_week <- tibble("Общее время(мин.)" = "", 
+                      "Время пропусков(%)" = "", 
+                      "Среднее значение глюкозы" = "",
+                      "Глюкоза ниже нормы(%)" = "",
+                      "Глюкоза в норме(%)" = "",
+                      "Глюкоза выше нормы(%)" = "") 
+  first_month <- first_week
+  half_year <- first_week
+
+  empty <- tibble("Общее время(мин.)" = NA, 
+             "Время пропусков(%)" = NA, 
+             "Среднее значение глюкозы" = NA,
+             "Глюкоза ниже нормы(%)" = NA,
+             "Глюкоза в норме(%)" = NA,
+             "Глюкоза выше нормы(%)" = NA)
+
+  # Список id всех файлов из базы, доступных для анализы
+  csv_id <<- as.integer(gsub(".csv", "", list.files("Filtered_Data")))
+
+  # Cписок id пациентов для предложенной выборки из базы (исключаем ошибочные id)
+  id <- csv[c(csv %in% csv_id)]
+  
+  # Цикл для формирования таблиц с данными по трем временным периодам - первая неделя, через один месяц и через полгода
+  for(w in id){
+    
+    # Загружаем датасет с данными по id
+    dataset <- read.csv(paste0("Filtered_data/", 
+                               str_pad(paste0(w, ".csv"), width = 8, side = "left", pad = "0")), 
+                               encoding = "UTF-8")
+  
+    # Убираем из датасета записи, не имеющие временной привязки или не связанные с измерением уровня глюкозы, а также исправляем формат записи даты и времени для точек, соответствующих полуночи
+    dataset <- dataset %>%
+      filter((`Ретроспективные.данные.по.глюкозе.ммоль.л` != "") | (`Сканирование.уровня.глюкозы.ммоль.л` != "")) %>%
+      filter(!is.na(`Ретроспективные.данные.по.глюкозе.ммоль.л`) | !is.na(`Сканирование.уровня.глюкозы.ммоль.л`)) %>%
+      filter(!is.na(`Отметка.времени.устройства`) & (`Отметка.времени.устройства` != "")) %>%
+      mutate(`Отметка.времени.устройства` = 
+               ifelse(str_length(`Отметка.времени.устройства`) == 10, 
+                      paste0(`Отметка.времени.устройства`, " 00:00:00"), `Отметка.времени.устройства`))
+  
+    # Исполняем функцию для возвращения временных отрезков
+    time_function(dataset)
+
+    # Результаты первых 2 недель
+    if(nrow(time_period_1) >= 3){ ## Проверка на длину периода (хотя бы 3 измерения)
+      info_function_GL(time_period_1$`Отметка.времени.устройства`, time_period_1$`Данные.по.глюкозе`)
+      first_week <- bind_rows(first_week, data_info)
+    }else{
+      first_week <- bind_rows(first_week, empty)
+    }
+    
+      # Результаты через один месяц
+    if(nrow(time_period_2) >= 3){ ## Проверка на длину периода (хотя бы 3 измерения)
+      info_function_GL(time_period_2$`Отметка.времени.устройства`, time_period_2$`Данные.по.глюкозе`)
+      first_month <- bind_rows(first_month, data_info)
+    }else{
+      first_month <- bind_rows(first_month, empty)
+    }
+  
+    # Результаты через полгода
+    if(nrow(time_period_3) >= 3){ ## Проверка на длину периода (хотя бы 3 измерения)
+      info_function_GL(time_period_3$`Отметка.времени.устройства`, time_period_3$`Данные.по.глюкозе`)
+      half_year <- bind_rows(half_year, data_info)
+    }else{
+      half_year <- bind_rows(half_year, empty)
+    }
+  }
+
+  # Удаляем пустую первую строку
+  first_week <- first_week[-1,]
+  first_month <- first_month[-1,]
+  half_year <- half_year[-1,]
+  
+  # Добавляем id пациентов
+  first_week <<- first_week %>%
+    mutate(id = id, .before = "Общее время(мин.)") %>%
+    arrange(id)
+  first_month <<- first_month %>%
+    mutate(id = id, .before = "Общее время(мин.)") %>%
+    arrange(id)
+  half_year <<- half_year %>%
+    mutate(id = id, .before = "Общее время(мин.)") %>%
+    arrange(id)
+}
+```
+
+```{r}
+data_period_creation(csv_id)
+```
+

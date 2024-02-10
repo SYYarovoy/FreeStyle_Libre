@@ -1,0 +1,270 @@
+---
+title: "Analysis of flash glucose monitoring data in patients with diabetes mellitus
+  p.2"
+author: "Карпович Лидия"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(psych)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(stringr)
+library(readxl)
+```
+
+#Работа с csv файлами пациентов
+Данные для функции (хранятся в Filtered_data)
+```{r}
+for (i in list.files("./Cleaned_FGM_data_2")){
+  df <- read.csv(str_c("./Cleaned_FGM_data_2/", i))
+  df$Отметка.времени.устройства <- strptime(df$Отметка.времени.устройства, format="%d-%m-%Y %H:%M")
+  df <- df %>% filter(.$Отметка.времени.устройства >= "2022-11-15 00:00") %>%
+    subset(., select = c(Отметка.времени.устройства, Ретроспективные.данные.по.глюкозе.ммоль.л, Сканирование.уровня.глюкозы.ммоль.л))
+  #write.csv(df, i)
+  }
+```
+
+Получение данных по количеству сканирований каждым пациентом в каждый день
+```{r, warning=FALSE, message=FALSE}
+scanning_number <- data.frame(matrix(ncol = 3, nrow = 0))
+colnames(scanning_number) <- c('id', 'date', 'number_of_scanning')
+number_of_scanning <- c()
+
+for (i in list.files("./Filtered_data")){
+  df <- read.csv(str_c("./Filtered_data/", i), na.strings = "") %>%
+    subset(., select = -c(Ретроспективные.данные.по.глюкозе.ммоль.л)) %>%
+    na.omit(.) 
+  
+  df$Отметка.времени.устройства <- strptime(df$Отметка.времени.устройства, format="%Y-%m-%d") 
+
+  for (k in unique(as.character(df$Отметка.времени.устройства))){
+    scanning_number[nrow(scanning_number) + 1,] = c(i, k, length(which(df$Отметка.времени.устройства == k)))
+  }
+  
+  a <- scanning_number %>% filter(.$id == i)
+  number_of_scanning <- c(number_of_scanning, mean(as.numeric(a$number_of_scanning)))
+}
+
+#write.csv(scanning_number, "Patient_Scanning.csv")
+
+#получение сводной таблицы по пациентам
+date_values <- data.frame(matrix(ncol = 4, nrow = 0))
+colnames(date_values) <- c('id', 'min_date', 'max_date', 'found_days')
+
+for (i in list.files("./Filtered_data")){
+  df <- read.csv(str_c("./Filtered_data/", i), na.strings = "") %>%
+    subset(., select = -c(Ретроспективные.данные.по.глюкозе.ммоль.л)) %>%
+    na.omit(.) 
+  df$Отметка.времени.устройства <- strptime(df$Отметка.времени.устройства, format="%Y-%m-%d")
+  date_values[nrow(date_values) + 1,] = c(i, as.character(min(df$Отметка.времени.устройства)), as.character(max(df$Отметка.времени.устройства)), length(unique(df$Отметка.времени.устройства)))
+}
+
+date_values$'mean_scanning' <- number_of_scanning
+date_values$min_date <- strptime(date_values$min_date, format="%Y-%m-%d")
+date_values$max_date <- strptime(date_values$max_date, format="%Y-%m-%d")
+
+date_values <- date_values %>%
+  mutate(number_of_days = as.numeric(.$max_date - .$min_date) + 1) %>%
+  mutate(missed_days = .$number_of_days - as.numeric(.$found_days)) %>%
+  mutate(percentage_found = as.numeric(.$found_days) / .$number_of_days)
+
+date_values$found_days <- as.numeric(date_values$found_days)
+date_values$number_of_days <- as.numeric(date_values$number_of_days)
+date_values$missed_days <- as.numeric(date_values$missed_days)
+
+#write.csv(date_values, "date_values.csv")
+
+```
+
+Визуализируем полученные результаты
+```{r, message=FALSE, warning=FALSE}
+plot_missing_days <- ggplot(date_values, aes(missed_days)) +
+  geom_histogram() +
+  ggtitle("Распределение количества пациентов в зависимости от пропущенных дней ") +
+  labs(x = "Пропущенные дни", y = "Количество пациентов")    
+
+ggplot(date_values, aes(percentage_found)) +
+  geom_histogram() +
+  ggtitle("Распределение пациентов в зависимости от доли дней без пропуска") +
+  labs(x = "Доля дней без пропусков", y = "Количество пациентов")  
+
+ggplot(date_values, aes(found_days)) +
+  geom_histogram() +
+  ggtitle("Распределение количества пациентов в зависимости от времени наблюдения") +
+  labs(x = "Время наблюдения", y = "Количество пациентов")  
+
+scanning_number_plot <- ggplot(date_values, aes(mean_scanning)) +
+  geom_histogram() +
+  ggtitle("Распределение количества сканирований") +
+  labs(x = "Количество сканирований", y = "Количество пациентов")
+
+```
+
+Объединяем полные данные по пациентам
+```{r}
+table_cleaned <- read_excel("./table_cleaned_v3.xlsx") %>%
+  subset(., select = -c(`Целевой \r\r\nгликированный \r\r\nгемоглобин менее`, `Последние доступные данные`, `Средний уровень глюкозы`, `Среднее количество сканирований/просмотров в сутки`,  `% целевого значения`, `% времени нахождения датчика в активном состоянии`, `Статус пользователя LibreView`, `% ниже целевого значения`, `% ниже порогового значения гипогликемических явлений`, `Средняя длительность гипогликемических явлений. зарегистрированных датчиком`, `% выше целевого значения`, `% выше порогового значения гипергликемических явлений`)) 
+
+date_table <- date_values
+date_table$id <- gsub('.csv', '', date_table$id)
+
+full_data <- left_join(date_table, table_cleaned, by='id')
+#write.csv(full_data, "full_data.csv")
+  
+```
+
+Построим графики зависимости количества сканирваний от пола
+```{r, message=FALSE, warning=FALSE}
+patient_sex <- scanning_number
+patient_sex$id <- gsub('.csv', '', patient_sex$id)
+patient_sex <- left_join(patient_sex, table_cleaned, by='id')
+
+patient_sex <- patient_sex %>% 
+  group_by(id) %>% 
+  mutate(continuous_date = as.POSIXct(date, format = "%Y-%m-%d") %>% 
+           as.numeric()) %>% 
+  mutate(continuous_date = (continuous_date - min(continuous_date)) / 86400) %>%
+  ungroup()
+
+#по мужчинам   
+men_table <- patient_sex %>% 
+  filter(`Пол` == "муж") 
+
+men_table_plot <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(men_table_plot) <- c('continuous_date', 'number')
+    
+for (i in unique(men_table$continuous_date)){
+  filter_patient <- men_table %>%
+    filter(continuous_date == i)
+  men_table_plot[nrow(men_table_plot) + 1,] = c(i, mean(as.numeric(filter_patient$number_of_scanning)))
+}
+
+men_table_plot %>% ggplot(aes(x = continuous_date, y = as.numeric(number))) +
+  geom_point() + geom_smooth() +
+  ggtitle("Зависимсоть количества сканирований от дня участия (мужчины)") +
+  labs(x = "День исследования", y = "Количество сканирований") +
+  ylim(0, 130) 
+
+#по женщинам
+women_table <- patient_sex %>% 
+  filter(`Пол` == "жен") 
+
+women_table_plot <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(women_table_plot) <- c('continuous_date', 'number')
+    
+for (i in unique(women_table$continuous_date)){
+  filter_patient_1 <- women_table %>%
+    filter(continuous_date == i)
+  women_table_plot[nrow(women_table_plot) + 1,] = c(i, mean(as.numeric(filter_patient_1$number_of_scanning)))
+}
+
+women_table_plot %>% ggplot(aes(x = continuous_date, y = as.numeric(number))) +
+  geom_point() + geom_smooth() +
+  ggtitle("Зависимсоть количества сканирований от дня участия (женщины)") +
+  labs(x = "День исследования", y = "Количество сканирований") +
+  ylim(0, 130) 
+
+```
+
+Отфильтруем пациентов, которые пользовались датчиком до включения в программу
+```{r, message=FALSE, warning=FALSE}
+for (i in list.files("./Cleaned_FGM_data_2")){
+  df <- read.csv(str_c("./Cleaned_FGM_data_2/", i))
+  df$Отметка.времени.устройства <- strptime(df$Отметка.времени.устройства, format="%d-%m-%Y %H:%M")
+  df <- df %>% filter(.$Отметка.времени.устройства < "2022-11-15 00:00") %>%
+    subset(., select = c(Отметка.времени.устройства, Ретроспективные.данные.по.глюкозе.ммоль.л, Сканирование.уровня.глюкозы.ммоль.л))
+  #write.csv(df, i)
+}
+
+summary_table <- data.frame(matrix(ncol = 1, nrow = 0))
+colnames(summary_table) <- c('id')
+
+for (i in list.files("./Early_patients")){
+  df <- read.csv(str_c("./Early_patients/", i), na.strings = "") %>%
+    subset(., select = -c(Ретроспективные.данные.по.глюкозе.ммоль.л)) %>%
+    na.omit(.)
+  
+  if (any(apply(df, 1, function(row) any(!is.na(row))))) {
+  table_name <- i
+  summary_table[nrow(summary_table) + 1,] = c(table_name)
+  } 
+}
+
+#write.csv(summary_table, "Patient_Scanning_early.csv")
+```
+
+Посмотрим на распределение сканирований без пациентов, которые раньше пользовались датчиком
+```{r, message=FALSE, warning=FALSE}
+full_data <- read.csv("./full_data.csv")
+summary_table <- read.csv("./Patient_Scanning_early.csv") 
+
+early_patients <- summary_table$id
+summary_table$id <- gsub('.csv', '', summary_table$id)
+early_patients_num <- as.character(as.integer(summary_table$id))
+  
+patient_scanning_filter <- read.csv("./Patient_Scanning.csv") %>%
+  filter(!(id %in% early_patients))
+
+full_data_filtered <- read.csv("./full_data.csv") %>%
+  filter(!(id %in% early_patients_num)) %>%
+  select(id, `Пол`)
+
+patient_scanning_filter$id <- gsub('.csv', '', patient_scanning_filter$id)
+patient_scanning_filter$id <- as.character(as.integer(patient_scanning_filter$id))
+
+patient_scanning_filter$id <- as.integer(patient_scanning_filter$id)
+
+full_data_end <- right_join(patient_scanning_filter, full_data_filtered, by='id')
+#write.csv(full_data, "full_data.csv")
+
+patient_sex <- full_data_end %>% 
+  group_by(id) %>% 
+  mutate(continuous_date = as.POSIXct(date, format = "%Y-%m-%d") %>% 
+           as.numeric()) %>% 
+  mutate(continuous_date = (continuous_date - min(continuous_date)) / 86400) %>%
+  ungroup()
+
+#по мужчинам   
+men_table <- patient_sex %>% 
+  filter(`Пол` == "муж") 
+
+men_table_plot <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(men_table_plot) <- c('continuous_date', 'number')
+    
+for (i in unique(men_table$continuous_date)){
+  filter_patient <- men_table %>%
+    filter(continuous_date == i)
+  men_table_plot[nrow(men_table_plot) + 1,] = c(i, mean(as.numeric(filter_patient$number_of_scanning)))
+}
+
+men_table_plot %>% ggplot(aes(x = continuous_date, y = as.numeric(number))) +
+  geom_point() + geom_smooth() +
+  ggtitle("Зависимсоть количества сканирований от дня участия (мужчины)") +
+  labs(x = "День исследования", y = "Количество сканирований") +
+  ylim(0, 30) 
+
+#по женщинам
+women_table <- patient_sex %>% 
+  filter(`Пол` == "жен") 
+
+women_table_plot <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(women_table_plot) <- c('continuous_date', 'number')
+    
+for (i in unique(women_table$continuous_date)){
+  filter_patient_1 <- women_table %>%
+    filter(continuous_date == i)
+  women_table_plot[nrow(women_table_plot) + 1,] = c(i, mean(as.numeric(filter_patient_1$number_of_scanning)))
+}
+
+women_table_plot %>% ggplot(aes(x = continuous_date, y = as.numeric(number))) +
+  geom_point() + geom_smooth() +
+  ggtitle("Зависимсоть количества сканирований от дня участия (женщины)") +
+  labs(x = "День исследования", y = "Количество сканирований") +
+  ylim(0, 30) 
+```
+

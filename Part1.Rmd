@@ -1,0 +1,963 @@
+---
+title: Analysis of flash glucose monitoring data in patients with diabetes mellitus
+  p.1
+author: "Карпович Лидия"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(ggplot2)
+library(psych)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(gtsummary)
+library(vioplot)
+library(GGally)
+library(summarytools)
+library(tidyverse)
+library(multcomp)
+library(sandwich)
+library(lmtest)
+library(modelsummary)
+library(broom)
+```
+
+Читаем данные
+```{r}
+data <- read_excel("./table_cleaned_v3.xlsx")
+```
+
+#Описание анализируемой популяции
+Общее описание данных.
+```{r}
+data$`Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер` <- as.factor(data$`Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`)
+data$`Полинейропатия 0-нет, 1- есть` <- as.factor(data$`Полинейропатия 0-нет, 1- есть`)
+data$`Автономная нейропатия 0-нет, 1- есть` <- as.factor(data$`Автономная нейропатия 0-нет, 1- есть`)
+data$`Нефропатия  0- нет, 1- есть` <- as.factor(data$`Нефропатия  0- нет, 1- есть`)
+data$`Терапия: помпа-1, шприц-ручки-2` <- as.factor(data$`Терапия: помпа-1, шприц-ручки-2`)
+data$Пол <- as.factor(data$Пол)
+data$`Последние доступные данные` <- strptime(data$`Последние доступные данные`, "%d-%m-%Y")
+data$`Статус пользователя LibreView` <- as.factor(data$`Статус пользователя LibreView`)
+data <- data %>% rename(`Целевой гликированный гемоглобин менее` = `Целевой \r\r\nгликированный \r\r\nгемоглобин менее`)
+
+data[data$id == "0127", "Автономная нейропатия 0-нет, 1- есть"] <- NA
+
+data <- droplevels(data)
+
+summary(data)
+```
+
+Посмотрим на распределение пациентов по полу.
+```{r}
+df_plot <- data %>% group_by(`Пол`) %>%
+  summarise(n = n()) %>%
+  mutate(proportions = scales::percent(n/628, 0.01))
+
+plot <- df_plot %>% ggplot(aes(x = `Пол`, y = n)) +
+    geom_col(position = 'dodge') +
+    geom_text(aes(label = paste0(n, '(', proportions, ')')), position = position_dodge(.9), vjust = 2, colour = "white") +
+    ylab("Количество") +
+    ggtitle("Распределение исследуемой популяции по полу")
+
+plot
+```
+
+Теперь посмотрим на распределение по возрасту.
+```{r, warning=FALSE, message=FALSE}
+data <- data %>% 
+  mutate("Возрастная группа" = case_when(
+      Возраст < 35 ~ "18-34",
+      Возраст >= 35 & Возраст < 50 ~ "35-49",
+      Возраст >= 50 ~ "50+"))
+
+df_for_plot <- data %>% group_by(`Возрастная группа`, `Пол`) %>%
+  summarise(glucose = mean(`Средний уровень глюкозы`), mean_screening = mean(`Среднее количество сканирований/просмотров в сутки`), mean_variation = mean(`Коэффициент вариации`), n = n()) %>%
+  mutate(proportions = scales::percent(n/628, 0.01)) %>%
+  mutate(sd = sd(n))
+
+plot_1 <- df_for_plot %>% ggplot(aes(x = `Возрастная группа`, y = n, fill = `Пол`)) +
+    geom_col(position = 'dodge') +
+    geom_text(aes(label = paste0(n, '(', proportions, ')')), vjust = -2, position = position_dodge(.9)) +
+    ylab("Количество пациентов") +
+    ggtitle("Распределение анализируемой популяции по возрасту") +
+    geom_errorbar(aes(x = `Возрастная группа`, y = n, ymin = n - 1.96*sd/sqrt(n), ymax = n + 1.96*sd/sqrt(n)), position = 'dodge')
+
+plot_1
+```
+
+Среднее количество сканирований/просмотров в сутки.
+```{r}
+ggplot() +
+  geom_boxplot(data = data, 
+               aes(x = `Среднее количество сканирований/просмотров в сутки`, y = `Возрастная группа`, fill = `Пол`)) +
+  theme_minimal()
+```
+
+Описание cубпопуляции с заполненными клиническими данными.
+Распределение по полу.
+```{r}
+clinical_data <- data %>%
+  drop_na(`Целевой гликированный гемоглобин менее`)
+
+clinical_plot <- clinical_data %>% group_by(`Пол`) %>%
+  summarise(n = n()) %>%
+  mutate(proportions = scales::percent(n/479, 0.01))
+
+plot_2 <- clinical_plot %>% ggplot(aes(x = `Пол`, y = n)) +
+    geom_col(position = 'dodge') +
+    geom_text(aes(label = paste0(n, '(', proportions, ')')), position = position_dodge(.9), vjust = 2, colour = "white") +
+    ylab("Количество") +
+    ggtitle("Распределение cубпопуляции по полу ")
+
+plot_2
+```
+
+Распределение субпопуляции по возрасту.
+```{r, message=FALSE, warning=FALSE}
+full_clinical_summary <- clinical_data %>% group_by(`Возрастная группа`, `Пол`) %>%
+  summarise(glucose = mean(`Средний уровень глюкозы`), mean_screening = mean(`Среднее количество сканирований/просмотров в сутки`), mean_variation = mean(`Коэффициент вариации`), n = n()) %>%
+  mutate(proportions = scales::percent(n/479, 0.01)) %>%
+  mutate(sd = sd(n))
+
+full_clinical_summary
+
+plot_3 <- full_clinical_summary %>% ggplot(aes(x = `Возрастная группа`, y = n, fill = `Пол`)) +
+    geom_col(position = 'dodge') +
+    geom_text(aes(label = paste0(n, '(', proportions, ')')), vjust = -2.5, position = position_dodge(.9)) +
+    ylab("Количество пациентов") +
+    ggtitle("Распределение субпопуляции по возрасту") +
+    geom_errorbar(aes(x = `Возрастная группа`, y = n, ymin = n - 1.96*sd/sqrt(n), ymax = n + 1.96*sd/sqrt(n)), position = 'dodge')
+
+plot_3 #ДИ у графиков распределения возраста у популяции и субпопуляции пересекаются, следовательно, выборка репрезентативно отражает полную популяцию.
+
+table_sum_sub <- clinical_data %>% select(`Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`, `Полинейропатия 0-нет, 1- есть`, `Автономная нейропатия 0-нет, 1- есть`, `Нефропатия  0- нет, 1- есть`, `Терапия: помпа-1, шприц-ручки-2`) %>% tbl_summary()
+
+table_sum_sub
+```
+
+
+#Определение половозрастных особенностей показателей углеводного обмена.
+Построим график зависимости уровня глюкозы от возраста пациента.
+```{r, message=FALSE}
+ggplot(data, aes(x = Возраст, y = `Средний уровень глюкозы`, color = Пол))+
+  ggtitle("Зависимость уровня глюкозы от возраста")+
+  geom_point()+
+  geom_smooth(method=lm)
+```
+
+Посмотрим на корреляцию между возрастом и средним уровнем глюкозы.
+```{r}
+cor(data$Возраст, data$`Средний уровень глюкозы`) # корреляция довольно низкая
+```
+Построим линейную регрессионную модель
+```{r}
+model <- lm(`Средний уровень глюкозы`~ Возраст*Пол, data)
+summary(model)
+```
+
+Разделим данные на несколько возрастных групп (на 3) и построим графики по ним.
+```{r, message=FALSE, warning=FALSE}
+subset_one <- subset(data, data$Возраст %in% 15:35)
+subset_two <- subset(data, data$Возраст %in% 36:50)
+subset_three <- subset(data, data$Возраст %in% 51:80)
+
+t.test(subset_one$`Средний уровень глюкозы`~subset_one$Пол)
+t.test(subset_two$`Средний уровень глюкозы`~subset_two$Пол)
+t.test(subset_three$`Средний уровень глюкозы`~subset_three$Пол)
+
+ggplot(data, aes(x = Возраст, y = `Коэффициент вариации`, color = Пол))+
+  ggtitle("Зависимость коэффициента вариации от возраста")+
+  geom_point()+
+  geom_smooth(method=lm)
+
+cor(data$Возраст, data$`Коэффициент вариации`)
+
+ggplot(data, aes(x = Возраст, y = `% выше целевого значения`, color = Пол))+
+  ggtitle("Зависимость % выше целевого значения от возраста")+
+  geom_point()+
+  geom_smooth(method=lm)
+
+cor(data$Возраст, data$`% выше целевого значения`)
+
+ggplot(data, aes(x = Возраст, y = `% ниже целевого значения`, color = Пол))+
+  ggtitle("Зависимость % ниже целевого значения от возраста")+
+  geom_point()+
+  geom_smooth(method=lm)
+
+cor(data$Возраст, data$`% ниже целевого значения`)
+```
+
+
+#Исследуем ассоциации между наличием осложнений СД и показателями углеводного обмена.
+Анализ осложнений СД.
+```{r}
+par(mfrow=c(2,2), mar=c(4, 4, 2, 1))
+
+barplot(table(data$"Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер"), main="Ретинопатия", ylim=c(0, 350))
+barplot(table(data$"Полинейропатия 0-нет, 1- есть"), main="Полинейропатия", ylim=c(0, 350))
+barplot(table(data$"Автономная нейропатия 0-нет, 1- есть"), main="Автономная нейропатия", ylim=c(0, 350))
+barplot(table(data$"Нефропатия  0- нет, 1- есть"), main="Нефропатия", ylim=c(0, 350))
+```
+
+Посмотрим на средний уровень глюкозы при различных осложнениях.
+```{r, fig.width=15, fig.height=10}
+par(mfrow=c(2,2), mar=c(4, 4, 2, 1), oma=c(2, 2, 2, 2))  # Увеличенные внешние отступы
+
+# 1. Посмотреть средний уровень глюкозы по наличию ретинопатии
+boxplot(`Средний уровень глюкозы` ~ `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`,
+        data = data,
+        main = "Средний уровень глюкозы по ретинопатии",
+        xlab = "Ретинопатия",
+        ylab = "Средний уровень глюкозы",
+        cex.main = 1.5,  # Увеличение размера текста
+        cex.lab = 1.2,   # Увеличение размера подписей осей
+        cex.axis = 1.2   # Увеличение размера меток осей
+        )
+
+# 2. Посмотреть средний уровень глюкозы по наличию автономной нейропатии
+boxplot(`Средний уровень глюкозы` ~ `Автономная нейропатия 0-нет, 1- есть`,
+        data = data,
+        main = "Средний уровень глюкозы по автономной нейропатии",
+        xlab = "Автономная нейропатия",
+        ylab = "Средний уровень глюкозы",
+        cex.main = 1.5,
+        cex.lab = 1.2,
+        cex.axis = 1.2
+        )
+
+# 3. Посмотреть средний уровень глюкозы по наличию нефропатии
+boxplot(`Средний уровень глюкозы` ~ `Нефропатия  0- нет, 1- есть`,
+        data = data,
+        main = "Средний уровень глюкозы по наличию нефропатии",
+        xlab = "Нефропатия",
+        ylab = "Средний уровень глюкозы",
+        cex.main = 1.5,
+        cex.lab = 1.2,
+        cex.axis = 1.2
+        )
+
+# 4. Посмотреть средний уровень глюкозы по наличию полинейропатии
+boxplot(`Средний уровень глюкозы` ~ `Полинейропатия 0-нет, 1- есть`,
+        data = data,
+        main = "Средний уровень глюкозы по полинейропатии",
+        xlab = "Полинейропатия",
+        ylab = "Средний уровень глюкозы",
+        cex.main = 1.5,
+        cex.lab = 1.2,
+        cex.axis = 1.2
+        )
+```
+
+Построим violin plots для распределения среднего уровня глюкозы от осложнений.
+```{r, fig.width=15, fig.height=10}
+# Установка графика с расстоянием и большими размерами
+par(mfrow=c(2,2), mar=c(4, 4, 2, 1), oma=c(2, 2, 2, 2))  # Увеличенные внешние отступы
+
+# 1. Посмотреть распределение уровня глюкозы по наличию ретинопатии
+vioplot(`Средний уровень глюкозы` ~ `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`,
+        data = data,
+        col = "lightblue",
+        main = "Распределение уровня глюкозы по ретинопатии",
+        xlab = "Ретинопатия",
+        ylab = "Средний уровень глюкозы"
+)
+
+# 2. Посмотреть распределение уровня глюкозы по наличию автономной нейропатии
+vioplot(`Средний уровень глюкозы` ~ `Автономная нейропатия 0-нет, 1- есть`,
+        data = data,
+        col = "lightgreen",
+        main = "Распределение уровня глюкозы по автономной нейропатии",
+        xlab = "Автономная нейропатия",
+        ylab = "Средний уровень глюкозы"
+)
+
+# 3. Посмотреть распределение уровня глюкозы по наличию нефропатии
+vioplot(`Средний уровень глюкозы` ~ `Нефропатия  0- нет, 1- есть`,
+        data = data,
+        col = "lightpink",
+        main = "Распределение уровня глюкозы по нефропатии",
+        xlab = "Нефропатия",
+        ylab = "Средний уровень глюкозы"
+)
+
+# 4. Посмотреть распределение уровня глюкозы по наличию полинейропатии
+vioplot(`Средний уровень глюкозы` ~ `Полинейропатия 0-нет, 1- есть`,
+        data = data,
+        col = "lightcoral",
+        main = "Распределение уровня глюкозы по полинейропатии",
+        xlab = "Полинейропатия",
+        ylab = "Средний уровень глюкозы"
+)
+```
+
+
+```{r, warning=FALSE}
+# Вычислить корреляцию Спирмена для Ретинопатии
+cor_result_retinopathy <- cor.test(as.numeric(data$`Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`),
+                                    data$`Средний уровень глюкозы`,
+                                    method = "spearman",
+                                    ties.method = "average")
+
+# Вывести результат
+cat("Корреляция Спирмена между Ретинопатией и Средним уровнем глюкозы:\n")
+print(cor_result_retinopathy)
+
+# Применить критерий Манна-Уитни для Автономной нейропатии
+mann_whitney_autonomic <- wilcox.test(`Средний уровень глюкозы` ~ `Автономная нейропатия 0-нет, 1- есть`, data = data)
+
+# Вывести результат
+cat("\nКритерий Манна-Уитни для Автономной нейропатии и Среднего уровня глюкозы:\n")
+print(mann_whitney_autonomic)
+
+# Применить критерий Манна-Уитни для Нефропатии
+mann_whitney_nephropathy <- wilcox.test(`Средний уровень глюкозы` ~ `Нефропатия  0- нет, 1- есть`, data = data)
+
+# Вывести результат
+cat("\nКритерий Манна-Уитни для Нефропатии и Среднего уровня глюкозы:\n")
+print(mann_whitney_nephropathy)
+
+# Применить критерий Манна-Уитни для Полинейропатии
+mann_whitney_polyneuropathy <- wilcox.test(`Средний уровень глюкозы` ~ `Полинейропатия 0-нет, 1- есть`, data = data)
+
+# Вывести результат
+cat("\nКритерий Манна-Уитни для Полинейропатии и Среднего уровня глюкозы:\n")
+print(mann_whitney_polyneuropathy)
+```
+
+Рассмотрим среднюю длительность гипогликемических явлений при наличии осложнений.
+```{r, fig.width=21, fig.height=10}
+par(mfrow=c(2,2), mar=c(5, 5, 3, 2), oma=c(2, 2, 2, 2))  # Увеличенные внешние отступы
+
+# 1. Посмотреть среднюю длительность гипогликемических явлений по наличию ретинопатии
+boxplot(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`,
+        data = data,
+        main = "Средняя длительность гипогликемических явлений по наличию ретинопатии",
+        xlab = "Ретинопатия",
+        ylab = "Средняя длительность гипогликемических явлений",
+        cex.main = 1.5,  # Увеличение размера текста
+        cex.lab = 1.2,   # Увеличение размера подписей осей
+        cex.axis = 1.2   # Увеличение размера меток осей
+)
+
+# 2. Посмотреть среднюю длительность гипогликемических явлений по наличию автономной нейропатии
+boxplot(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Автономная нейропатия 0-нет, 1- есть`,
+        data = data,
+        main = "Средняя длительность гипогликемических явлений по наличию автономной нейропатии",
+        xlab = "Автономная нейропатия",
+        ylab = "Средняя длительность гипогликемических явлений",
+        cex.main = 1.5,
+        cex.lab = 1.2,
+        cex.axis = 1.2
+)
+
+# 3. Посмотреть среднюю длительность гипогликемических явлений по наличию нефропатии
+boxplot(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Нефропатия  0- нет, 1- есть`,
+        data = data,
+        main = "Средняя длительность гипогликемических явлений по наличию нефропатии",
+        xlab = "Нефропатия",
+        ylab = "Средняя длительность гипогликемических явлений",
+        cex.main = 1.5,
+        cex.lab = 1.2,
+        cex.axis = 1.2
+)
+
+# 4. Посмотреть среднюю длительность гипогликемических явлений по наличию полинейропатии
+boxplot(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Полинейропатия 0-нет, 1- есть`,
+        data = data,
+        main = "Средняя длительность гипогликемических явлений по начилию полинейропатии",
+        xlab = "Полинейропатия",
+        ylab = "Средняя длительность гипогликемических явлений",
+        cex.main = 1.5,
+        cex.lab = 1.2,
+        cex.axis = 1.2
+)
+```
+
+Построим violin plots для средней длительности гипогликемических явлений и наличию отклонений.
+```{r, fig.width=21, fig.height=10}
+par(mfrow=c(2,2), mar=c(4, 4, 2, 1), oma=c(2, 2, 2, 2))  # Увеличенные внешние отступы
+
+# 1. Посмотреть распределение средней длительности гипогликемических явлений по наличию ретинопатии
+vioplot(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`,
+        data = data,
+        col = "lightblue",
+        main = "Распределение средней длительности гипогликемических явлений по ретинопатии",
+        xlab = "Ретинопатия",
+        ylab = "Средняя длительность гипогликемических явлений"
+)
+
+# 2. Посмотреть распределение средней длительности гипогликемических явлений по наличию автономной нейропатии
+vioplot(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Автономная нейропатия 0-нет, 1- есть`,
+        data = data,
+        col = "lightgreen",
+        main = "Распределение средней длительности гипогликемических явлений по автономной нейропатии",
+        xlab = "Автономная нейропатия",
+        ylab = "Средняя длительность гипогликемических явлений"
+)
+
+# 3. Посмотреть распределение средней длительности гипогликемических явлений по наличию нефропатии
+vioplot(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Нефропатия  0- нет, 1- есть`,
+        data = data,
+        col = "lightpink",
+        main = "Распределение средней длительности гипогликемических явлений по нефропатии",
+        xlab = "Нефропатия",
+        ylab = "Средняя длительность гипогликемических явлений"
+)
+
+# 4. Посмотреть распределение средней длительности гипогликемических явлений по наличию полинейропатии
+vioplot(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Полинейропатия 0-нет, 1- есть`,
+        data = data,
+        col = "lightcoral",
+        main = "Распределение средней длительности гипогликемических явлений по полинейропатии",
+        xlab = "Полинейропатия",
+        ylab = "Средняя длительность гипогликемических явлений"
+)
+```
+
+
+```{r, warning=FALSE}
+# Вычислить корреляцию Спирмена для Ретинопатии
+cor_result_retinopathy <- cor.test(as.numeric(data$`Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`),
+                                    data$`Средняя длительность гипогликемических явлений. зарегистрированных датчиком`,
+                                    method = "spearman",
+                                    ties.method = "average")
+
+# Вывести результат
+cat("Корреляция Спирмена между Ретинопатией и Средней длительностью гипогликемических явлений:\n")
+print(cor_result_retinopathy)
+
+# Применить критерий Манна-Уитни для Автономной нейропатии
+mann_whitney_autonomic <- wilcox.test(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Автономная нейропатия 0-нет, 1- есть`, data = data)
+
+# Вывести результат
+cat("\nКритерий Манна-Уитни для Автономной нейропатии и Средней длительности гипогликемических явлений:\n")
+print(mann_whitney_autonomic)
+
+# Применить критерий Манна-Уитни для Нефропатии
+mann_whitney_nephropathy <- wilcox.test(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Нефропатия  0- нет, 1- есть`, data = data)
+
+# Вывести результат
+cat("\nКритерий Манна-Уитни для Нефропатии и Средней длительности гипогликемических явлений:\n")
+print(mann_whitney_nephropathy)
+
+# Применить критерий Манна-Уитни для Полинейропатии
+mann_whitney_polyneuropathy <- wilcox.test(`Средняя длительность гипогликемических явлений. зарегистрированных датчиком` ~ `Полинейропатия 0-нет, 1- есть`, data = data)
+
+# Вывести результат
+cat("\nКритерий Манна-Уитни для Полинейропатии и Средней длительности гипогликемических явлений:\n")
+print(mann_whitney_polyneuropathy)
+```
+
+
+#Исследуем ассоциации параметров использования устройства с показателями углеводного обмена, а также клинико-анамнестическими данными.
+Для клинико-анамнестических данных (Среднее количество сканирований/просмотров в сутки)
+```{r}
+vioplot(`Среднее количество сканирований/просмотров в сутки` ~ `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`,
+        data = data,
+        col = "lightblue",
+        main = "Количество сканирований и ретинопатия",
+        xlab = "Ретинопатия",
+        ylab = "Среднее количество сканирований/просмотров в сутки"
+)
+oneway.test(`Среднее количество сканирований/просмотров в сутки` ~ `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`, data = data)
+
+vioplot(`Среднее количество сканирований/просмотров в сутки` ~ `Полинейропатия 0-нет, 1- есть`,
+        data = data,
+        col = "blue",
+        main = "Количество сканирований и полинейропатия",
+        xlab = "Полинейропатия",
+        ylab = "Среднее количество сканирований/просмотров в сутки"
+)
+oneway.test(`Среднее количество сканирований/просмотров в сутки` ~ `Полинейропатия 0-нет, 1- есть`, data = data)
+
+vioplot(`Среднее количество сканирований/просмотров в сутки` ~ `Автономная нейропатия 0-нет, 1- есть`,
+        data = data,
+        col = "pink",
+        main = "Количество сканирований и автономная нейропатия",
+        xlab = "Автономная нейропатия",
+        ylab = "Среднее количество сканирований/просмотров в сутки"
+)
+oneway.test(`Среднее количество сканирований/просмотров в сутки` ~ `Автономная нейропатия 0-нет, 1- есть`, data = data)
+
+vioplot(`Среднее количество сканирований/просмотров в сутки` ~ `Нефропатия  0- нет, 1- есть`,
+        data = data,
+        col = "red",
+        main = "Количество сканирований и нефропатия",
+        xlab = "Нефропатия",
+        ylab = "Среднее количество сканирований/просмотров в сутки"
+)
+oneway.test(`Среднее количество сканирований/просмотров в сутки` ~ `Нефропатия  0- нет, 1- есть`, data = data)
+
+vioplot(`Среднее количество сканирований/просмотров в сутки` ~ `Терапия: помпа-1, шприц-ручки-2`,
+        data = data,
+        col = "green",
+        main = "Количество сканирований и нефропатия",
+        xlab = "Нефропатия",
+        ylab = "Среднее количество сканирований/просмотров в сутки"
+)
+oneway.test(`Среднее количество сканирований/просмотров в сутки` ~ `Терапия: помпа-1, шприц-ручки-2`, data = data)
+```
+
+Для клинико-анамнестических данных (% времени нахождения датчика в активном состоянии)
+```{r}
+vioplot(`% времени нахождения датчика в активном состоянии` ~ `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`,
+        data = data,
+        col = "lightblue",
+        main = "% времени в активном состоянии и ретинопатия",
+        xlab = "Ретинопатия",
+        ylab = "% времени нахождения датчика в активном состоянии"
+)
+oneway.test(`% времени нахождения датчика в активном состоянии` ~ `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`, data = data)
+# Получили статистически значимые различия по F-тесту Велша
+
+data2 <- data %>% mutate(retino = `Ретинопатия 0-нет, 1-непролифер, 2- препролифер, 3-пролифер`)
+
+m1 <- lm(`% времени нахождения датчика в активном состоянии` ~ retino, data = data2)
+HBW.comp <- glht(model = m1, linfct = mcp(retino = "Tukey"), vcov = vcovHC(m1, type = "HC4"))
+HBW.comp %>% summary() # Статистически значимые различия между вариантами 2 и 0, 2 и 1
+
+
+vioplot(`% времени нахождения датчика в активном состоянии` ~ `Полинейропатия 0-нет, 1- есть`,
+        data = data,
+        col = "blue",
+        main = "% времени в активном состоянии и полинейропатия",
+        xlab = "Полинейропатия",
+        ylab = "% времени нахождения датчика в активном состоянии"
+)
+oneway.test(`% времени нахождения датчика в активном состоянии` ~ `Полинейропатия 0-нет, 1- есть`, data = data)
+
+vioplot(`% времени нахождения датчика в активном состоянии` ~ `Автономная нейропатия 0-нет, 1- есть`,
+        data = data,
+        col = "pink",
+        main = "% времени в активном состоянии и автономная нейропатия",
+        xlab = "Автономная нейропатия",
+        ylab = "% времени нахождения датчика в активном состоянии"
+)
+oneway.test(`% времени нахождения датчика в активном состоянии` ~ `Автономная нейропатия 0-нет, 1- есть`, data = data)
+
+vioplot(`% времени нахождения датчика в активном состоянии` ~ `Нефропатия  0- нет, 1- есть`,
+        data = data,
+        col = "red",
+        main = "% времени в активном состоянии и нефропатия",
+        xlab = "Нефропатия",
+        ylab = "% времени нахождения датчика в активном состоянии"
+)
+oneway.test(`% времени нахождения датчика в активном состоянии` ~ `Нефропатия  0- нет, 1- есть`, data = data)
+
+vioplot(`% времени нахождения датчика в активном состоянии` ~ `Терапия: помпа-1, шприц-ручки-2`,
+        data = data,
+        col = "green",
+        main = "% времени в активном состоянии и терапия",
+        xlab = "Терапия: помпа-1, шприц-ручки-2",
+        ylab = "% времени нахождения датчика в активном состоянии"
+)
+oneway.test(`% времени нахождения датчика в активном состоянии` ~ `Терапия: помпа-1, шприц-ручки-2`, data = data)
+```
+
+Для пола
+```{r}
+vioplot(`Среднее количество сканирований/просмотров в сутки` ~ `Пол`,
+        data = data,
+        col = "grey",
+        main = "Количество сканирований и пол",
+        xlab = "Пол",
+        ylab = "Среднее количество сканирований/просмотров в сутки"
+)
+oneway.test(`Среднее количество сканирований/просмотров в сутки` ~ `Пол`, data = data)
+
+vioplot(`% времени нахождения датчика в активном состоянии` ~ `Пол`,
+        data = data,
+        col = "lightgreen",
+        main = "% времени в активном состоянии и пол",
+        xlab = "Пол",
+        ylab = "% времени нахождения датчика в активном состоянии"
+)
+oneway.test(`% времени нахождения датчика в активном состоянии` ~ `Пол`, data = data)
+lm(`% времени нахождения датчика в активном состоянии` ~ `Пол`, data = data) %>% confint()
+lm(`% времени нахождения датчика в активном состоянии` ~ `Пол`, data = data) %>% summary()
+
+# Мужской пол является фактором, определяющим более низкую частоту использования датчика
+```
+
+Модели с возрастом и Средним количеством сканирований/просмотров в сутки:
+```{r}
+V1 <- lm(`Среднее количество сканирований/просмотров в сутки` ~ `Возраст`, data = data)
+plot(V1)
+model.matrix(V1) %>% head
+modelsummary(V1)
+tidy(V1, conf.int = TRUE)
+
+V2 <- lm(`Среднее количество сканирований/просмотров в сутки` ~ log(`Возраст`), data = data)
+plot(V2)
+model.matrix(V2) %>% head
+modelsummary(V2)
+tidy(V2, conf.int = TRUE)
+
+V3 <- lm(`Среднее количество сканирований/просмотров в сутки` ~ `Возраст`^ 2, data = data)
+plot(V3)
+model.matrix(V3) %>% head
+modelsummary(V3)
+tidy(V3, conf.int = TRUE)
+coeftest(V3, vcov. = vcovHC, type = "HC4")
+
+V4 <- lm(`Среднее количество сканирований/просмотров в сутки` ~ `Возраст` + `Пол`, data = data)
+plot(V4)
+model.matrix(V4) %>% head
+modelsummary(V4)
+tidy(V4, conf.int = TRUE)
+
+ggplot(data, aes(x=`Возраст`, y=`Среднее количество сканирований/просмотров в сутки`, group =`Пол`, col =`Пол`, fill =`Пол`)) +   geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+```
+
+Модели с возрастом и % времени нахождения датчика в активном состоянии:
+```{r}
+V5 <- lm(`% времени нахождения датчика в активном состоянии` ~ `Возраст`, data = data)
+plot(V5)
+model.matrix(V5) %>% head
+modelsummary(V5)
+tidy(V5, conf.int = TRUE)
+coeftest(V5, vcov. = vcovHC, type = "HC4")
+coefci(V5, vcov. = vcovHC, type = "HC4")
+
+V6 <- lm(`% времени нахождения датчика в активном состоянии` ~ log(`Возраст`), data = data) # Наиболее подходящая модель
+plot(V6)
+model.matrix(V6) %>% head
+modelsummary(V6)
+tidy(V6, conf.int = TRUE)
+coeftest(V6, vcov. = vcovHC, type = "HC4")
+coefci(V6, vcov. = vcovHC, type = "HC4")
+
+V7 <- lm(`% времени нахождения датчика в активном состоянии` ~ `Возраст`^ 2, data = data)
+plot(V7)
+model.matrix(V7) %>% head
+modelsummary(V7)
+tidy(V7, conf.int = TRUE)
+coeftest(V7, vcov. = vcovHC, type = "HC4")
+coefci(V7, vcov. = vcovHC, type = "HC4")
+
+V8 <- lm(`% времени нахождения датчика в активном состоянии` ~ `Возраст` + `Пол`, data = data)
+plot(V8)
+model.matrix(V8) %>% head
+modelsummary(V8)
+tidy(V8, conf.int = TRUE)
+coeftest(V8, vcov. = vcovHC, type = "HC4")
+coefci(V8, vcov. = vcovHC, type = "HC4")
+
+ggplot(data, aes(x=`Возраст`, y=`% времени нахождения датчика в активном состоянии`, group =`Пол`, col =`Пол`, fill =`Пол`)) +   geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data, aes(x=log(`Возраст`), y=`% времени нахождения датчика в активном состоянии`, group =`Пол`, col =`Пол`, fill =`Пол`)) +   geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+```
+
+Среднее количество сканирований/просмотров в сутки и параметры гликемического профиля.
+```{r, message=FALSE, warning=FALSE}
+data2 <- data %>% rename(glu = `Средний уровень глюкозы`, scan = `Среднее количество сканирований/просмотров в сутки`, cel = `% целевого значения`, activ = `% времени нахождения датчика в активном состоянии`, low = `% ниже целевого значения`, low_hypo = `% ниже порогового значения гипогликемических явлений`, up = `% выше целевого значения`, avg_hypo = `Средняя длительность гипогликемических явлений. зарегистрированных датчиком`, up_hyper = `% выше порогового значения гипергликемических явлений`, cv = `Коэффициент вариации`)
+
+ggpairs(data2[, c('scan', 'glu', 'cel', 'low', 'low_hypo', 'up')], progress = FALSE, upper = list (continuous = wrap('cor', method = "spearman"))) + 
+  theme_bw()
+
+ggpairs(data2[, c('scan', 'avg_hypo', 'up_hyper', 'cv')], progress = FALSE, upper = list (continuous = wrap('cor', method = "spearman"))) + 
+  theme_bw()
+```
+
+Построим линейные модели
+```{r, message=FALSE, warning=FALSE}
+S1 <- lm(`scan` ~ `glu`, data = data2) 
+plot(S1)
+model.matrix(S1) %>% head
+modelsummary(S1)
+tidy(S1, conf.int = TRUE)
+a1 <- coeftest(S1, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ++
+
+S1log <- lm(`scan` ~ log(`glu`), data = data2) 
+plot(S1log)
+model.matrix(S1log) %>% head
+modelsummary(S1log)
+tidy(S1log, conf.int = TRUE)
+b1 <- coeftest(S1log, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ++++++
+
+ggplot(data2, aes(x=`glu`, y=`scan`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data2, aes(x=log(`glu`), y=`scan`, group =`Пол`, col =`Пол`, fill =`Пол`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+# Построение линейных моделей:
+S2 <- lm(`scan` ~ `cel`, data = data2) 
+plot(S2)
+model.matrix(S2) %>% head
+modelsummary(S2)
+tidy(S2, conf.int = TRUE)
+a2 <- coeftest(S2, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### +++
+
+S2log <- lm(`scan` ~ log(`cel`+1), data = data2) 
+plot(S2log)
+model.matrix(S2log) %>% head
+modelsummary(S2log)
+tidy(S2log, conf.int = TRUE)
+b2 <- coeftest(S2log, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ++++++++
+
+ggplot(data2, aes(x=`cel`, y=`scan`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data2, aes(x=log(`cel`+1), y=`scan`)) +  
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+            se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+# Построение линейных моделей:
+S3 <- lm(`scan` ~ `low`, data = data2) 
+plot(S3)
+model.matrix(S3) %>% head
+modelsummary(S3)
+tidy(S3, conf.int = TRUE)
+a3 <- coeftest(S3, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ---
+
+S3log <- lm(`scan` ~ log(`low` + 1), data = data2) 
+plot(S3log)
+model.matrix(S3log) %>% head
+modelsummary(S3log)
+tidy(S3log, conf.int = TRUE)
+b3 <- coeftest(S3log, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ---
+
+ggplot(data2, aes(x=`low`, y=`scan`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data2, aes(x=log(`low`), y=`scan`, group =`Пол`, col =`Пол`, fill =`Пол`)) +   ### ???
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+# Построение линейных моделей:
+S4 <- lm(`scan` ~ `up`, data = data2) 
+plot(S4)
+model.matrix(S4) %>% head
+modelsummary(S4)
+tidy(S4, conf.int = TRUE)
+a4 <- coeftest(S4, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### +++
+
+S4log <- lm(`scan` ~ log(`up` + 1), data = data2)
+plot(S4log)
+model.matrix(S4log) %>% head
+modelsummary(S4log)
+tidy(S4log, conf.int = TRUE)
+b4 <- coeftest(S4log, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ---
+
+ggplot(data2, aes(x=`up`, y=`scan`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data2, aes(x=log(`up`), y=`scan`)) +   ### ???
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+```
+
+% времени нахождения датчика в активном состоянии и параметры гликемического профиля
+```{r, warning=FALSE, message=FALSE}
+data2 <- data %>% rename(glu = `Средний уровень глюкозы`, scan = `Среднее количество сканирований/просмотров в сутки`, cel = `% целевого значения`, activ = `% времени нахождения датчика в активном состоянии`, low = `% ниже целевого значения`, low_hypo = `% ниже порогового значения гипогликемических явлений`, up = `% выше целевого значения`, avg_hypo = `Средняя длительность гипогликемических явлений. зарегистрированных датчиком`, up_hyper = `% выше порогового значения гипергликемических явлений`, cv = `Коэффициент вариации`)
+
+ggpairs(data2[, c('activ', 'glu', 'cel', 'low', 'low_hypo', 'up')], progress = FALSE, upper = list (continuous = wrap('cor', method = "spearman"))) + 
+  theme_bw()
+
+ggpairs(data2[, c('activ', 'avg_hypo', 'up_hyper', 'cv')], progress = FALSE, upper = list (continuous = wrap('cor', method = "spearman"))) + 
+  theme_bw()
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+# Построение линейных моделей:
+S1 <- lm(`activ` ~ `glu`, data = data2) 
+plot(S1)
+model.matrix(S1) %>% head
+modelsummary(S1)
+tidy(S1, conf.int = TRUE)
+a1 <- coeftest(S1, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### +
+
+S1log <- lm(`activ` ~ log(`glu`), data = data2) 
+plot(S1log)
+model.matrix(S1log) %>% head
+modelsummary(S1log)
+tidy(S1log, conf.int = TRUE)
+b1 <- coeftest(S1log, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### +++
+
+ggplot(data2, aes(x=`glu`, y=`activ`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data2, aes(x=log(`glu`), y=`activ`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+# Построение линейных моделей:
+S2 <- lm(`activ` ~ `cel`, data = data2) 
+plot(S2)
+model.matrix(S2) %>% head
+modelsummary(S2)
+tidy(S2, conf.int = TRUE)
+a2 <- coeftest(S2, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### +
+
+S2log <- lm(`activ` ~ log(`cel`+1), data = data2) 
+plot(S2log)
+model.matrix(S2log) %>% head
+modelsummary(S2log)
+tidy(S2log, conf.int = TRUE)
+b2 <- coeftest(S2log, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ++++++++
+
+ggplot(data2, aes(x=`cel`, y=`activ`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data2, aes(x=log(`cel`+1), y=`activ`)) +   ### ???#  geom_point() +
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+            se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+# Построение линейных моделей:
+S3 <- lm(`activ` ~ `low`, data = data2) 
+plot(S3)
+model.matrix(S3) %>% head
+modelsummary(S3)
+tidy(S3, conf.int = TRUE)
+a3 <- coeftest(S3, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### --
+
+S3log <- lm(`activ` ~ log(`low` + 1), data = data2) 
+plot(S3log)
+model.matrix(S3log) %>% head
+modelsummary(S3log)
+tidy(S3log, conf.int = TRUE)
+b3 <- coeftest(S3log, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### +++
+
+ggplot(data2, aes(x=`low`, y=`activ`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data2, aes(x=log(`low`), y=`activ`)) +   ### ???
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+# Построение линейных моделей:
+S4 <- lm(`activ` ~ `up`, data = data2) 
+plot(S4)
+model.matrix(S4) %>% head
+modelsummary(S4)
+tidy(S4, conf.int = TRUE)
+a4 <- coeftest(S4, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ++
+
+S4log <- lm(`activ` ~ log(`up` + 1), data = data2)
+plot(S4log)
+model.matrix(S4log) %>% head
+modelsummary(S4log)
+tidy(S4log, conf.int = TRUE)
+b4 <- coeftest(S4log, vcov. = vcovHC, type = "HC4") %>% tidy(., conf.int = TRUE) %>% as.tibble ### ---
+
+ggplot(data2, aes(x=`up`, y=`activ`)) +   
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+
+ggplot(data2, aes(x=log(`up`), y=`activ`)) +   ### ???
+  geom_point() +
+  geom_smooth(method=lm,
+              fullrange = T,
+              alpha = 0.3,
+              se=TRUE # Используем ли доверительные интервалы?
+              ) +
+  theme_minimal()
+```
+
