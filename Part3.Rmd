@@ -289,6 +289,7 @@ data_period_creation <- function(csv){ ## csv - вектор с нужными i
 ```
 
 ```{r}
-data_period_creation(csv_id)
+csv <- (1:700)
+data_period_creation(csv)
 ```
 
